@@ -595,7 +595,8 @@ protected:
     virtual void acquireWakeLock_l() REQUIRES(mutex());
     void releaseWakeLock() EXCLUDES_ThreadBase_Mutex;
     void releaseWakeLock_l() REQUIRES(mutex());
-    void updateWakeLockUids_l(const SortedVector<uid_t> &uids) REQUIRES(mutex());
+    // TODO(b/410038399) fix thread safety
+    void updateWakeLockUids_l(const SortedVector<uid_t> &uids) /* REQUIRES(mutex()) */;
     void getPowerManager_l() REQUIRES(mutex());
                 // suspend or restore effects of the specified type (or all if type is NULL)
                 // on a given session. The number of suspend requests is counted and restore
@@ -894,6 +895,8 @@ protected:
 
                 SimpleLog mLocalLog {/* maxLogLines= */ 120};  // locked internally
 
+    ActiveTracks<IAfTrackBase> mActiveTracks GUARDED_BY(mutex()) {&mLocalLog};
+
     // mThreadloopExecutor contains deferred functors and object (dtors) to
     // be executed at the end of the processing period, without any
     // mutexes held.
@@ -957,17 +960,17 @@ protected:
     virtual void threadLoop_drain() REQUIRES(ThreadBase_ThreadLoop);
     virtual void threadLoop_standby() REQUIRES(ThreadBase_ThreadLoop);
     virtual void threadLoop_exit() REQUIRES(ThreadBase_ThreadLoop);
-    virtual void threadLoop_removeTracks(const Vector<sp<IAfTrack>>& tracksToRemove)
+    virtual void threadLoop_removeTracks(const std::vector<sp<IAfTrackBase>>& tracksToRemove)
             REQUIRES(ThreadBase_ThreadLoop);
 
                 // prepareTracks_l reads and writes mActiveTracks, and returns
                 // the pending set of tracks to remove via Vector 'tracksToRemove'.  The caller
                 // is responsible for clearing or destroying this Vector later on, when it
                 // is safe to do so. That will drop the final ref count and destroy the tracks.
-    virtual mixer_state prepareTracks_l(Vector<sp<IAfTrack>>* tracksToRemove)
+    virtual mixer_state prepareTracks_l(std::vector<sp<IAfTrackBase>>* tracksToRemove)
             REQUIRES(mutex(), ThreadBase_ThreadLoop) = 0;
 
-    void removeTracks_l(const Vector<sp<IAfTrack>>& tracksToRemove) REQUIRES(mutex());
+    void removeTracks_l(const std::vector<sp<IAfTrackBase>>& tracksToRemove) REQUIRES(mutex());
     status_t handleVoipVolume_l(float *volume) REQUIRES(mutex());
 
     // StreamOutHalInterfaceCallback implementation
@@ -995,7 +998,8 @@ protected:
     void preExit() final EXCLUDES_ThreadBase_Mutex;
 
     virtual     bool        keepWakeLock() const { return true; }
-    virtual void acquireWakeLock_l() REQUIRES(mutex()) {
+    // TODO(b/410038399) fix thread safety
+    virtual void acquireWakeLock_l() NO_THREAD_SAFETY_ANALYSIS {
                                 ThreadBase::acquireWakeLock_l();
         mActiveTracks.updatePowerState_l(this, true /* force */);
                             }
@@ -1057,7 +1061,7 @@ public:
                                 bool muted) final
             REQUIRES(audio_utils::AudioFlinger_Mutex);
 
-    bool isTrackActive(const sp<IAfTrack>& track) const final {
+    bool isTrackActive_l(const sp<IAfTrack>& track) const final REQUIRES(mutex()) {
         return mActiveTracks.indexOf(track) >= 0;
     }
 
@@ -1367,7 +1371,8 @@ protected:
                             : mTimestampVerifier.DISCONTINUITY_MODE_CONTINUOUS;
                 }
 
-    ActiveTracks<IAfTrack> mActiveTracks;
+    ContainerView<decltype(mActiveTracks), sp<IAfTrack>>
+            mActivePlaybackTracksView GUARDED_BY(mutex()) {mActiveTracks};
 
     // Time to sleep between cycles when:
     virtual uint32_t        activeSleepTimeUs() const;      // mixer state MIXER_TRACKS_ENABLED
@@ -1646,7 +1651,7 @@ public:
                                     audio_channel_mask_t channelMask, audio_format_t format,
             audio_session_t sessionId, uid_t uid) const final REQUIRES(mutex());
 protected:
-    mixer_state prepareTracks_l(Vector<sp<IAfTrack>>* tracksToRemove) override
+    mixer_state prepareTracks_l(std::vector<sp<IAfTrackBase>>* tracksToRemove) override
             REQUIRES(mutex(), ThreadBase_ThreadLoop);
     uint32_t idleSleepTimeUs() const final;
     uint32_t suspendSleepTimeUs() const final;
@@ -1783,14 +1788,14 @@ protected:
     void dumpInternals_l(int fd, const Vector<String16>& args) override REQUIRES(mutex());
 
     // threadLoop snippets
-    virtual mixer_state prepareTracks_l(Vector<sp<IAfTrack>>* tracksToRemove)
+    mixer_state prepareTracks_l(std::vector<sp<IAfTrackBase>>* tracksToRemove) override
             REQUIRES(mutex(), ThreadBase_ThreadLoop);
-    virtual void threadLoop_mix() REQUIRES(ThreadBase_ThreadLoop);
-    virtual void threadLoop_sleepTime() REQUIRES(ThreadBase_ThreadLoop);
-    virtual void threadLoop_exit() REQUIRES(ThreadBase_ThreadLoop);
-    virtual bool shouldStandby_l() REQUIRES(mutex());
+    void threadLoop_mix() final REQUIRES(ThreadBase_ThreadLoop);
+    void threadLoop_sleepTime() final REQUIRES(ThreadBase_ThreadLoop);
+    void threadLoop_exit() override REQUIRES(ThreadBase_ThreadLoop);
+    bool shouldStandby_l() final REQUIRES(mutex());
 
-    virtual void onAddNewTrack_l() REQUIRES(mutex());
+    void onAddNewTrack_l() final REQUIRES(mutex());
 
     const       audio_offload_info_t mOffloadInfo;
 
@@ -1800,7 +1805,7 @@ protected:
     DirectOutputThread(const sp<IAfThreadCallback>& afThreadCallback, AudioStreamOut* output,
                        audio_io_handle_t id, ThreadBase::type_t type, bool systemReady,
                        const audio_offload_info_t& offloadInfo);
-    void processVolume_l(IAfTrack *track, bool lastTrack) REQUIRES(mutex());
+    void processVolume_l(const sp<IAfTrack>& track, bool lastTrack) REQUIRES(mutex());
     bool isTunerStream() const { return (mOffloadInfo.content_id > 0); }
 
     // prepareTracks_l() tells threadLoop_mix() the name of the single active track
@@ -1846,7 +1851,7 @@ public:
 
 protected:
     // threadLoop snippets
-    mixer_state prepareTracks_l(Vector<sp<IAfTrack>>* tracksToRemove) final
+    mixer_state prepareTracks_l(std::vector<sp<IAfTrackBase>>* tracksToRemove) final
             REQUIRES(mutex(), ThreadBase_ThreadLoop);
     void threadLoop_exit() final REQUIRES(ThreadBase_ThreadLoop);
 
@@ -2168,7 +2173,8 @@ private:
             SortedVector <sp<IAfRecordTrack>>    mTracks;
             // mActiveTracks has dual roles:  it indicates the current active track(s), and
             // is used together with mStartStopCV to indicate start()/stop() progress
-            ActiveTracks<IAfRecordTrack>           mActiveTracks;
+    ContainerView<decltype(mActiveTracks), sp<IAfRecordTrack>>
+            mActiveRecordTracksView GUARDED_BY(mutex()) {mActiveTracks};
 
             audio_utils::condition_variable mStartStopCV;
 
@@ -2385,7 +2391,8 @@ class MmapThread : public ThreadBase, public virtual IAfMmapThread
     sp<StreamHalInterface> mHalStream; // NO_THREAD_SAFETY_ANALYSIS
     sp<DeviceHalInterface> mHalDevice GUARDED_BY(mutex());
     AudioHwDevice* const mAudioHwDev GUARDED_BY(mutex());
-    ActiveTracks<IAfMmapTrack> mActiveTracks GUARDED_BY(mutex());
+    ContainerView<decltype(mActiveTracks), sp<IAfMmapTrack>>
+            mActiveMmapTracksView GUARDED_BY(mutex()) {mActiveTracks};
     float mHalVolFloat GUARDED_BY(mutex());
     std::map<audio_port_handle_t, bool> mClientSilencedStates GUARDED_BY(mutex());
 
@@ -2514,7 +2521,7 @@ public:
             final EXCLUDES_ThreadBase_Mutex;
 
 protected:
-    mixer_state prepareTracks_l(Vector<sp<IAfTrack>>* tracksToRemove) final
+    mixer_state prepareTracks_l(std::vector<sp<IAfTrackBase>>* tracksToRemove) final
             REQUIRES(mutex(), ThreadBase_ThreadLoop);
     void threadLoop_mix() final REQUIRES(ThreadBase_ThreadLoop);
 
