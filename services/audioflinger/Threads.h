@@ -480,8 +480,7 @@ public:
                     if (getEffectChain_l(sessionId) != 0) {
                         result = EFFECT_SESSION;
                     }
-                    for (size_t i = 0; i < tracks.size(); ++i) {
-                        const sp<IAfTrackBase>& track = tracks[i];
+                    for (const auto& track : tracks) {
                         if (sessionId == track->sessionId()
                                 && !track->isInvalid()       // not yet removed from tracks.
                                 && !track->isTerminated()) {
@@ -560,8 +559,7 @@ public:
                 template <typename T>
     void invalidateTracksForAudioSession_l(audio_session_t sessionId,
             const T& tracks) const REQUIRES(mutex()) {
-                    for (size_t i = 0; i < tracks.size(); ++i) {
-                        const sp<IAfTrackBase>& track = tracks[i];
+                    for (const auto& track : tracks) {
                         if (sessionId == track->sessionId()) {
                             track->invalidate();
                         }
@@ -595,8 +593,7 @@ protected:
     virtual void acquireWakeLock_l() REQUIRES(mutex());
     void releaseWakeLock() EXCLUDES_ThreadBase_Mutex;
     void releaseWakeLock_l() REQUIRES(mutex());
-    // TODO(b/410038399) fix thread safety
-    void updateWakeLockUids_l(const SortedVector<uid_t> &uids) /* REQUIRES(mutex()) */;
+    void updateWakeLockUids_l(const SortedVector<uid_t> &uids) REQUIRES(mutex());
     void getPowerManager_l() REQUIRES(mutex());
                 // suspend or restore effects of the specified type (or all if type is NULL)
                 // on a given session. The number of suspend requests is counted and restore
@@ -796,8 +793,6 @@ protected:
                 //
 
                 class ActiveTracks {
-                    // TODO(b/410038399) clean up types
-                    using T = IAfTrackBase;
                 public:
                     explicit ActiveTracks(SimpleLog *localLog = nullptr)
                         : mActiveTracksGeneration(0)
@@ -806,7 +801,7 @@ protected:
                     { }
 
                     ~ActiveTracks() {
-                        ALOGW_IF(!mActiveTracks.isEmpty(),
+                        ALOGW_IF(!mActiveTracks.empty(),
                                 "ActiveTracks should be empty in destructor");
                     }
                     // returns the last track added (even though it may have been
@@ -820,35 +815,33 @@ protected:
                     // The latest track is saved with a weak pointer to prevent keeping an
                     // otherwise useless track alive. Thus the function will return nullptr
                     // if the latest track has subsequently been removed and destroyed.
-                    sp<T> getLatest() {
+                    sp<IAfTrackBase> getLatest() {
                         return mLatestActiveTrack.promote();
                     }
-
-                    // SortedVector methods
-                    ssize_t         add(const sp<T> &track);
-                    ssize_t         remove(const sp<T> &track);
-                    size_t          size() const {
+                    bool add(const sp<IAfTrackBase>& track);
+                    bool remove(const sp<IAfTrackBase>& track);
+                    size_t size() const {
                         return mActiveTracks.size();
                     }
-                    bool            isEmpty() const {
-                        return mActiveTracks.isEmpty();
+                    bool empty() const {
+                        return mActiveTracks.empty();
                     }
-                    ssize_t indexOf(const sp<T>& item) const {
-                        return mActiveTracks.indexOf(item);
+                    size_t count(const sp<IAfTrackBase>& track) const {
+                        return mActiveTracks.count(track);
                     }
-                    sp<T>           operator[](size_t index) const {
-                        return mActiveTracks[index];
+                    auto erase(const std::set<sp<IAfTrackBase>>::iterator& it) {
+                        return mActiveTracks.erase(it);
                     }
-                    typename SortedVector<sp<T>>::iterator begin() {
+                    auto begin() {
                         return mActiveTracks.begin();
                     }
-                    typename SortedVector<sp<T>>::iterator end() {
+                    auto end() {
                         return mActiveTracks.end();
                     }
-                    typename SortedVector<const sp<T>>::iterator begin() const {
+                    auto begin() const {
                         return mActiveTracks.begin();
                     }
-                    typename SortedVector<const sp<T>>::iterator end() const {
+                    auto end() const {
                         return mActiveTracks.end();
                     }
 
@@ -862,7 +855,7 @@ protected:
                     // periodically called in the threadLoop() to update power state uids.
                     // TODO(b/410038399) fix thread safety
                     void updatePowerState_l(const sp<ThreadBase>& thread, bool force = false)
-                           /* REQUIRES(audio_utils::ThreadBase_Mutex) */;
+                           REQUIRES(audio_utils::ThreadBase_Mutex);
 
                     /** @return true if one or move active tracks was added or removed since the
                      *          last time this function was called or the vector was created.
@@ -876,20 +869,20 @@ protected:
                     void            setHasChanged() { mHasChanged = true; }
 
                 private:
-                    void            logTrack(const char *funcName, const sp<T> &track) const;
+                    void logTrack(const char* funcName, const sp<IAfTrackBase>& track) const;
 
                     SortedVector<uid_t> getWakeLockUids() {
                         SortedVector<uid_t> wakeLockUids;
-                        for (const sp<T> &track : mActiveTracks) {
+                        for (const auto& track : mActiveTracks) {
                             wakeLockUids.add(track->uid());
                         }
                         return wakeLockUids; // moved by underlying SharedBuffer
                     }
 
-                    SortedVector<sp<T>> mActiveTracks;
+                    std::set<sp<IAfTrackBase>> mActiveTracks;
                     int                 mActiveTracksGeneration;
                     int                 mLastActiveTracksGeneration;
-                    wp<T>               mLatestActiveTrack; // latest track added to ActiveTracks
+                    wp<IAfTrackBase> mLatestActiveTrack; // latest track added to ActiveTracks
                     SimpleLog * const   mLocalLog;
                     // If the vector has changed since last call to readAndClearHasChanged
                     bool                mHasChanged = false;
@@ -917,14 +910,14 @@ protected:
         size_t size() const {
             return mTracks.size();
         }
-        bool isEmpty() const {
+        bool empty() const {
             return mTracks.isEmpty();
         }
-        ssize_t indexOf(const sp<T>& item) {
-            return mTracks.indexOf(item);
-        }
-        sp<T> operator[](size_t index) const {
-            return mTracks[index];
+        size_t count(const sp<T>& track) const {
+            for (const sp<T> &t : mTracks) {
+                if (track == t) return 1;
+            }
+            return 0;
         }
         SortedVector<sp<T>>::iterator begin() {
             return mTracks.begin();
@@ -1062,8 +1055,8 @@ protected:
     void preExit() final EXCLUDES_ThreadBase_Mutex;
 
     virtual     bool        keepWakeLock() const { return true; }
-    // TODO(b/410038399) fix thread safety
-    virtual void acquireWakeLock_l() NO_THREAD_SAFETY_ANALYSIS {
+
+    virtual void acquireWakeLock_l() REQUIRES(mutex()){
                                 ThreadBase::acquireWakeLock_l();
         mActiveTracks.updatePowerState_l(this, true /* force */);
                             }
@@ -1126,7 +1119,7 @@ public:
             REQUIRES(audio_utils::AudioFlinger_Mutex);
 
     bool isTrackActive_l(const sp<IAfTrack>& track) const final REQUIRES(mutex()) {
-        return mActiveTracks.indexOf(track) >= 0;
+        return mActiveTracks.count(track) > 0;
     }
 
     AudioStreamOut* getOutput_l() const final REQUIRES(mutex()) { return mOutput; }
