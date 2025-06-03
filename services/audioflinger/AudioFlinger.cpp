@@ -1379,7 +1379,7 @@ status_t AudioFlinger::setMasterVolume(float value)
         if (thread->isDuplicating()) {
             continue;
         }
-        thread->setMasterVolume(value);
+        thread->asVolumeInterface()->setMasterVolume(value);
     }
 
     return NO_ERROR;
@@ -1417,7 +1417,7 @@ status_t AudioFlinger::setMasterBalance(float balance)
         if (thread->isDuplicating()) {
             continue;
         }
-        thread->setMasterBalance(balance);
+        thread->asVolumeInterface()->setMasterBalance(balance);
     }
 
     return NO_ERROR;
@@ -1691,8 +1691,7 @@ status_t AudioFlinger::setPortsVolume(
     }
     const sp<IAfMmapThread> mmapThread = checkMmapThread_l(output);
     if (mmapThread != nullptr && mmapThread->isOutput()) {
-        IAfMmapPlaybackThread *mmapPlaybackThread = mmapThread->asIAfMmapPlaybackThread().get();
-        return mmapPlaybackThread->setPortsVolume(ports, volume, muted);
+        return mmapThread->setPortsVolume(ports, volume, muted);
     }
     return BAD_VALUE;
 }
@@ -3098,7 +3097,7 @@ sp<IAfThreadBase> AudioFlinger::openOutput_l(audio_module_handle_t module,
 
     if (status == NO_ERROR) {
         if (*flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) {
-            const sp<IAfMmapPlaybackThread> thread = IAfMmapPlaybackThread::create(
+            const sp<IAfMmapThread> thread = IAfMmapThread::create(
                     this, *output, outHwDev, outputStream, mSystemReady);
             mMmapThreads[*output] = thread;
             ALOGV("openOutput_l() created mmap playback thread: ID %d thread %p",
@@ -3258,7 +3257,7 @@ status_t AudioFlinger::closeOutput_nonvirtual(audio_io_handle_t output)
     // keep strong reference on the playback thread so that
     // it is not destroyed while exit() is executed
     sp<IAfPlaybackThread> playbackThread;
-    sp<IAfMmapPlaybackThread> mmapThread;
+    sp<IAfMmapThread> mmapThread;
     {
         audio_utils::lock_guard _l(mutex());
         playbackThread = checkPlaybackThread_l(output);
@@ -3313,9 +3312,8 @@ status_t AudioFlinger::closeOutput_nonvirtual(audio_io_handle_t output)
                 }
             }
         } else {
-            const sp<IAfMmapThread> mt = checkMmapThread_l(output);
-            mmapThread = mt ? mt->asIAfMmapPlaybackThread().get() : nullptr;
-            if (mmapThread == 0) {
+            mmapThread = checkMmapThread_l(output);
+            if (mmapThread == nullptr || !mmapThread->isOutput()) {
                 return BAD_VALUE;
             }
             dumpToThreadLog_l(mmapThread);
@@ -3491,8 +3489,8 @@ sp<IAfThreadBase> AudioFlinger::openInput_l(audio_module_handle_t module,
 
     if (status == NO_ERROR) {
         if ((flags & AUDIO_INPUT_FLAG_MMAP_NOIRQ) != 0) {
-            const sp<IAfMmapCaptureThread> thread =
-                    IAfMmapCaptureThread::create(this, *input, inHwDev, inputStream, mSystemReady);
+            const auto thread =
+                    IAfMmapThread::create(this, *input, inHwDev, inputStream, mSystemReady);
             mMmapThreads[*input] = thread;
             ALOGV("openInput_l() created mmap capture thread: ID %d thread %p", *input,
                     thread.get());
@@ -3523,7 +3521,7 @@ status_t AudioFlinger::closeInput_nonvirtual(audio_io_handle_t input)
     // keep strong reference on the record thread so that
     // it is not destroyed while exit() is executed
     sp<IAfRecordThread> recordThread;
-    sp<IAfMmapCaptureThread> mmapThread;
+    sp<IAfMmapThread> mmapThread;
     {
         audio_utils::lock_guard _l(mutex());
         recordThread = checkRecordThread_l(input);
@@ -3570,9 +3568,8 @@ status_t AudioFlinger::closeInput_nonvirtual(audio_io_handle_t input)
             }
             mRecordThreads.erase(input);
         } else {
-            const sp<IAfMmapThread> mt = checkMmapThread_l(input);
-            mmapThread = mt ? mt->asIAfMmapCaptureThread().get() : nullptr;
-            if (mmapThread == 0) {
+            mmapThread = checkMmapThread_l(input);
+            if (mmapThread == nullptr || mmapThread->isOutput()) {
                 return BAD_VALUE;
             }
             dumpToThreadLog_l(mmapThread);
@@ -3880,6 +3877,10 @@ sp<IAfThreadBase> AudioFlinger::checkOutputThread_l(audio_io_handle_t ioHandle) 
             it != mPlaybackThreads.end()) {
         return it->second;
     }
+    if (const auto it = mMmapThreads.find(ioHandle);
+            it != mMmapThreads.end()) {
+        return it->second;
+    }
     return {};
 }
 
@@ -3925,15 +3926,13 @@ IAfMmapThread* AudioFlinger::checkMmapThread_l(audio_io_handle_t io) const
 sp<VolumeInterface> AudioFlinger::getVolumeInterface_l(audio_io_handle_t output) const {
     if (const auto it = mPlaybackThreads.find(output);
             it != mPlaybackThreads.end()) {
-        return it->second;
+        return it->second->asVolumeInterface();
     }
     if (const auto it = mMmapThreads.find(output);
             it != mMmapThreads.end()) {
         const auto& mmapThread = it->second;
         if (mmapThread->isOutput()) {
-            IAfMmapPlaybackThread* const mmapPlaybackThread =
-                    mmapThread->asIAfMmapPlaybackThread().get();
-            return mmapPlaybackThread;
+            return mmapThread->asVolumeInterface();
         }
     }
     return {};
@@ -3943,13 +3942,11 @@ std::vector<sp<VolumeInterface>> AudioFlinger::getAllVolumeInterfaces_l() const
 {
     std::vector<sp<VolumeInterface>> volumeInterfaces;
     for (const auto& [_, thread] : mPlaybackThreads) {
-        volumeInterfaces.push_back(thread);
+        volumeInterfaces.push_back(thread->asVolumeInterface());
     }
     for (const auto& [_, thread] : mMmapThreads) {
         if (thread->isOutput()) {
-            IAfMmapPlaybackThread* const mmapPlaybackThread =
-                    thread->asIAfMmapPlaybackThread().get();
-            volumeInterfaces.push_back(mmapPlaybackThread);
+            volumeInterfaces.push_back(thread->asVolumeInterface());
         }
     }
     return volumeInterfaces;
