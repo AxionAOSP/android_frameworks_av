@@ -20,6 +20,8 @@
 
 #include <utils/Log.h>
 
+#include <processgroup/processgroup.h>
+
 #include <stdint.h>
 #include <sys/types.h>
 #include "IAudioFlinger.h"
@@ -939,6 +941,7 @@ status_t AudioFlingerClientAdapter::resetReferencesForTest() {
 AudioFlingerServerAdapter::AudioFlingerServerAdapter(
         const sp<AudioFlingerServerAdapter::Delegate>& delegate) : mDelegate(delegate) {
     setMinSchedulerPolicy(SCHED_NORMAL, ANDROID_PRIORITY_AUDIO);
+    SetTaskProfiles(0, {"CPUSET_SP_FOREGROUND", "AudioAppCapacity"}, true);
     setInheritRt(true);
 }
 

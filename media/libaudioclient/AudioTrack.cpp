@@ -23,6 +23,8 @@
 #include <sys/resource.h>
 #include <thread>
 
+#include <processgroup/processgroup.h>
+
 #include <android/media/IAudioPolicyService.h>
 #include <android-base/macros.h>
 #include <android-base/stringprintf.h>
@@ -890,6 +892,7 @@ status_t AudioTrack::start()
             mPreviousPriority = getpriority(PRIO_PROCESS, 0);
             get_sched_policy(0, &mPreviousSchedulingGroup);
             androidSetThreadPriority(0, ANDROID_PRIORITY_AUDIO);
+            SetTaskProfiles(0, {"CPUSET_SP_FOREGROUND", "AudioAppCapacity"}, true);
         }
 
         // Start our local VolumeHandler for restoration purposes.
@@ -904,6 +907,7 @@ status_t AudioTrack::start()
         } else {
             setpriority(PRIO_PROCESS, 0, mPreviousPriority);
             set_sched_policy(0, mPreviousSchedulingGroup);
+            SetTaskProfiles(0, {"CPUSET_SP_FOREGROUND", "AudioAppCapacity"}, true);
         }
     }
 

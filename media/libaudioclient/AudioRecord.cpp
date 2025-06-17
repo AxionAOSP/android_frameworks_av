@@ -23,6 +23,8 @@
 #include <android-base/stringprintf.h>
 #include <sys/resource.h>
 
+#include <processgroup/processgroup.h>
+
 #include <audio_utils/format.h>
 #include <audiomanager/AudioManager.h>
 #include <audiomanager/IAudioManager.h>
@@ -508,6 +510,7 @@ status_t AudioRecord::start(AudioSystem::sync_event_t event, audio_session_t tri
             mPreviousPriority = getpriority(PRIO_PROCESS, 0);
             get_sched_policy(0, &mPreviousSchedulingGroup);
             androidSetThreadPriority(0, ANDROID_PRIORITY_AUDIO);
+            SetTaskProfiles(0, {"CPUSET_SP_FOREGROUND", "AudioAppCapacity"}, true);
         }
 
         // we've successfully started, log that time
@@ -546,6 +549,7 @@ void AudioRecord::stop()
     } else {
         setpriority(PRIO_PROCESS, 0, mPreviousPriority);
         set_sched_policy(0, mPreviousSchedulingGroup);
+        SetTaskProfiles(0, {"CPUSET_SP_FOREGROUND", "AudioAppCapacity"}, true);
     }
 
     // we've successfully started, log that time
