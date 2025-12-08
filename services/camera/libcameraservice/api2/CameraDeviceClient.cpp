@@ -25,6 +25,7 @@
 
 #include <android-base/properties.h>
 #include <android-base/strings.h>
+#include <android/content/res/CameraCompatibilityInfo.h>
 #include <camera/CameraUtils.h>
 #include <camera/StringUtils.h>
 #include <camera/camera2/CaptureRequest.h>
@@ -48,8 +49,6 @@
 #include "utils/Utils.h"
 
 // Convenience methods for constructing binder::Status objects for error returns
-constexpr int32_t METADATA_QUEUE_SIZE = 1 << 20;
-
 #define STATUS_ERROR(errorCode, errorString) \
     binder::Status::fromServiceSpecificError(errorCode, \
             fmt::sprintf("%s:%d: %s", __FUNCTION__, __LINE__, errorString).c_str())
@@ -73,10 +72,11 @@ CameraDeviceClientBase::CameraDeviceClientBase(
         std::shared_ptr<AttributionAndPermissionUtils> attributionAndPermissionUtils,
         const AttributionSourceState& clientAttribution, int callingPid, bool systemNativeClient,
         const std::string& cameraId, [[maybe_unused]] int api1CameraId, int cameraFacing,
-        int sensorOrientation, int servicePid, int rotationOverride, bool sharedMode)
+        int sensorOrientation, int servicePid, const CameraCompatibilityInfo& compatInfo,
+        bool sharedMode)
     : BasicClient(cameraService, IInterface::asBinder(remoteCallback),
                   attributionAndPermissionUtils, clientAttribution, callingPid, systemNativeClient,
-                  cameraId, cameraFacing, sensorOrientation, servicePid, rotationOverride,
+                  cameraId, cameraFacing, sensorOrientation, servicePid, compatInfo,
                   sharedMode),
       mRemoteCallback(remoteCallback) {}
 
@@ -89,12 +89,12 @@ CameraDeviceClient::CameraDeviceClient(
         std::shared_ptr<AttributionAndPermissionUtils> attributionAndPermissionUtils,
         const AttributionSourceState& clientAttribution, int callingPid, bool systemNativeClient,
         const std::string& cameraId, int cameraFacing, int sensorOrientation, int servicePid,
-        bool overrideForPerfClass, int rotationOverride, const std::string& originalCameraId,
-        bool sharedMode, bool isVendorClient)
+        bool overrideForPerfClass, const CameraCompatibilityInfo& compatInfo,
+        const std::string& originalCameraId, bool sharedMode, bool isVendorClient)
     : Camera2ClientBase(cameraService, remoteCallback, cameraServiceProxyWrapper,
                         attributionAndPermissionUtils, clientAttribution, callingPid,
                         systemNativeClient, cameraId, /*API1 camera ID*/ -1, cameraFacing,
-                        sensorOrientation, servicePid, overrideForPerfClass, rotationOverride,
+                        sensorOrientation, servicePid, overrideForPerfClass, compatInfo,
                         sharedMode, isVendorClient),
       mInputStream(),
       mStreamingRequestId(REQUEST_ID_NONE),
@@ -112,7 +112,7 @@ CameraDeviceClient::CameraDeviceClient(
     mPrivilegedClient = it != privilegedClientList.end();
 
     ATRACE_CALL();
-    ALOGI("CameraDeviceClient %s: Opened", cameraId.c_str());
+    ALOGV("CameraDeviceClient %s: Opened", cameraId.c_str());
 }
 
 status_t CameraDeviceClient::initialize(sp<CameraProviderManager> manager,
@@ -1194,8 +1194,19 @@ binder::Status CameraDeviceClient::createStream(
     int streamId = camera3::CAMERA3_STREAM_ID_INVALID;
     std::vector<int> surfaceIds;
     if (flags::camera_multi_client() && mSharedMode) {
-        err = mDevice->getSharedStreamId(streamInfo, &streamId);
+        std::vector<int> streamIds;
+        err = mDevice->getSharedStreamIds(streamInfo, streamIds);
         if (err == OK) {
+            for (auto id: streamIds) {
+              if (!mStreamInfoMap.contains(id)) {
+                streamId = id;
+                break;
+              }
+            }
+            if (streamId == camera3::CAMERA3_STREAM_ID_INVALID) {
+                return STATUS_ERROR(CameraService::ERROR_ILLEGAL_ARGUMENT,
+                    "OutputConfiguration isn't valid!");
+            }
             err = mDevice->addSharedSurfaces(streamId, streamInfos, surfaceHolders, &surfaceIds);
         }
     } else {
@@ -2266,7 +2277,7 @@ status_t CameraDeviceClient::dump(int fd, const Vector<String16>& args) {
     return BasicClient::dump(fd, args);
 }
 
-status_t CameraDeviceClient::dumpClient(int fd, const Vector<String16>& args) {
+status_t CameraDeviceClient::dumpClient(int fd, const Vector<String16>& args, bool ignoreResult) {
     dprintf(fd, "  CameraDeviceClient[%s] (%p) dump:\n",
             mCameraIdStr.c_str(),
             (getRemoteCallback() != NULL ?
@@ -2296,7 +2307,9 @@ status_t CameraDeviceClient::dumpClient(int fd, const Vector<String16>& args) {
         dprintf(fd, "      No output streams configured.\n");
     }
     // TODO: print dynamic/request section from most recent requests
-    mFrameProcessor->dump(fd, args);
+    if (!ignoreResult) {
+        mFrameProcessor->dump(fd, args);
+    }
 
     return dumpDevice(fd, args);
 }
