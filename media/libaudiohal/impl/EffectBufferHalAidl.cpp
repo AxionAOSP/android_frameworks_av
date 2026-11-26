@@ -65,6 +65,12 @@ status_t EffectBufferHalAidl::init() {
     if (0 != posix_memalign(&mAudioBuffer.raw, 32, mBufferSize)) {
         return NO_MEMORY;
     }
+#ifdef AUDIOHAL_ZERO_EFFECT_BUFFERS
+    // posix_memalign() does not clear the memory. AudioFlinger never writes the input buffer
+    // of an effect chain whose session only has fast tracks, yet an idle insert effect still
+    // accumulates it into the mix, so start from silence like the ashmem-backed HIDL buffers.
+    memset(mAudioBuffer.raw, 0, mBufferSize);
+#endif
 
     return OK;
 }
