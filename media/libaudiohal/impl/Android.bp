@@ -228,11 +228,32 @@ cc_defaults {
     ],
 }
 
+// Clear the AIDL effect buffers on allocation. Devices that run an idle insert effect
+// (such as the QTI volume listener) on fast-track sessions opt in with:
+//   $(call soong_config_set_bool,libaudiohal,zero_effect_buffers,true)
+soong_config_module_type {
+    name: "libaudiohal_zero_effect_buffers_cc_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "libaudiohal",
+    bool_variables: ["zero_effect_buffers"],
+    properties: ["cflags"],
+}
+
+libaudiohal_zero_effect_buffers_cc_defaults {
+    name: "libaudiohal_zero_effect_buffers_defaults",
+    soong_config_variables: {
+        zero_effect_buffers: {
+            cflags: ["-DAUDIOHAL_ZERO_EFFECT_BUFFERS"],
+        },
+    },
+}
+
 cc_library_shared {
     name: "libaudiohal@aidl",
     defaults: [
         "libaudiohal_aidl_default",
         "libaudiohal_default",
+        "libaudiohal_zero_effect_buffers_defaults",
     ],
     srcs: [
         ":audio_effect_hal_aidl_src_files",
